@@ -74,19 +74,19 @@ Features
 
 @st.cache_resource
 def load_models():
-    rf_model = joblib.load(BASE_DIR / "models" / "rf_model.pkl")
-    gb_model = joblib.load(BASE_DIR / "models" / "gb_model.pkl")
+    rf_model = joblib.load(BASE_DIR / "rf_model.pkl")
+    gb_model = joblib.load(BASE_DIR / "gb_model.pkl")
 
     cnn_model = None
     lstm_model = None
     if tf_available and load_model is not None:
         try:
-            cnn_model = load_model(BASE_DIR / "models" / "cnn_model.h5")
+            cnn_model = load_model(BASE_DIR / "cnn_model.h5")
         except Exception:
             cnn_model = None
 
         try:
-            lstm_model = load_model(BASE_DIR / "models" / "lstm_model.h5")
+            lstm_model = load_model(BASE_DIR / "lstm_model.h5")
         except Exception:
             lstm_model = None
 

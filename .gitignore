@@ -10,9 +10,6 @@ venv/
 .DS_Store
 
 backend/jobs_processed.csv
-backend/models/
-*.pkl
-*.h5
 dataset/job_descriptions.csv
+dataset/Resume.csv
 .git.broken/
-dataset/job_descriptions.csv
