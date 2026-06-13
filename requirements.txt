@@ -6,3 +6,4 @@ scikit-learn
 scipy
 PyPDF2
 pypdf
+tensorflow
