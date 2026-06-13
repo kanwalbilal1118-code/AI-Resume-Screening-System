@@ -72,29 +72,56 @@ Features
 # LOAD FILES
 # ==================================
 
+MODEL_DIR = BASE_DIR / "models"
+
+
+def load_joblib_file(path: Path, name: str):
+    try:
+        return joblib.load(path)
+    except FileNotFoundError:
+        st.error(f"❌ {name} not found at {path}")
+    except Exception as exc:
+        st.error(f"❌ Failed to load {name}: {exc}")
+    return None
+
+
+def load_keras_file(path: Path, name: str):
+    try:
+        return load_model(path)
+    except FileNotFoundError:
+        st.warning(f"⚠️ {name} not found at {path}")
+    except Exception as exc:
+        st.warning(f"⚠️ Failed to load {name}: {exc}")
+    return None
+
+
 @st.cache_resource
 def load_models():
-    rf_model = joblib.load(BASE_DIR / "rf_model.pkl")
-    gb_model = joblib.load(BASE_DIR / "gb_model.pkl")
+    rf_model = load_joblib_file(MODEL_DIR / "rf_model.pkl", "rf_model.pkl")
+    gb_model = load_joblib_file(MODEL_DIR / "gb_model.pkl", "gb_model.pkl")
 
     cnn_model = None
     lstm_model = None
     if tf_available and load_model is not None:
-        try:
-            cnn_model = load_model(BASE_DIR / "cnn_model.h5")
-        except Exception:
-            cnn_model = None
+        cnn_model = load_keras_file(MODEL_DIR / "cnn_model.h5", "cnn_model.h5")
+        lstm_model = load_keras_file(MODEL_DIR / "lstm_model.h5", "lstm_model.h5")
+    else:
+        if not tf_available:
+            st.warning("⚠️ TensorFlow is not available, CNN and LSTM models will not be loaded.")
 
-        try:
-            lstm_model = load_model(BASE_DIR / "lstm_model.h5")
-        except Exception:
-            lstm_model = None
+    tfidf = load_joblib_file(BASE_DIR / "tfidf.pkl", "tfidf.pkl")
+    label_encoder = load_joblib_file(BASE_DIR / "label_encoder.pkl", "label_encoder.pkl")
+    tokenizer = load_joblib_file(BASE_DIR / "tokenizer.pkl", "tokenizer.pkl")
+    job_tfidf = load_joblib_file(BASE_DIR / "job_tfidf.pkl", "job_tfidf.pkl")
 
-    tfidf = joblib.load(BASE_DIR / "tfidf.pkl")
-    label_encoder = joblib.load(BASE_DIR / "label_encoder.pkl")
-    tokenizer = joblib.load(BASE_DIR / "tokenizer.pkl")
-    job_tfidf = joblib.load(BASE_DIR / "job_tfidf.pkl")
-    jobs_df = pd.read_csv(BASE_DIR / "jobs_small.csv")
+    try:
+        jobs_df = pd.read_csv(BASE_DIR / "jobs_small.csv")
+    except FileNotFoundError:
+        st.error(f"❌ jobs_small.csv not found at {BASE_DIR}")
+        jobs_df = pd.DataFrame()
+    except Exception as exc:
+        st.error(f"❌ Failed to read jobs_small.csv: {exc}")
+        jobs_df = pd.DataFrame()
 
     return (
         rf_model,
