@@ -1,5 +1,8 @@
 import io
+import importlib.util
 import re
+import sys
+import types
 from pathlib import Path
 
 import joblib
@@ -8,11 +11,22 @@ import streamlit as st
 from sklearn.metrics.pairwise import cosine_similarity
 
 try:
-    from tensorflow.keras.models import load_model
+    import keras
+    from keras.models import load_model as keras_load_model
+    keras_available = True
+except ImportError:
+    keras = None
+    keras_load_model = None
+    keras_available = False
+
+try:
+    from tensorflow.keras.models import load_model as tf_load_model
     tf_available = True
 except ImportError:
-    load_model = None
+    tf_load_model = None
     tf_available = False
+
+model_loader = keras_load_model or tf_load_model
 
 try:
     from PyPDF2 import PdfReader
@@ -27,6 +41,30 @@ except ImportError:
 
 
 BASE_DIR = Path(__file__).resolve().parent
+
+
+def ensure_numpy_compatibility():
+    try:
+        import numpy as np
+
+        if importlib.util.find_spec("numpy._core") is None:
+            module = types.ModuleType("numpy._core")
+            module.__dict__.update(vars(np.core))
+            sys.modules["numpy._core"] = module
+            np._core = module
+    except Exception:
+        pass
+
+
+def ensure_keras_compatibility():
+    try:
+        if keras_available and importlib.util.find_spec("keras.src.legacy") is None:
+            if hasattr(keras, "legacy"):
+                module = types.ModuleType("keras.src.legacy")
+                module.__dict__.update(vars(keras.legacy))
+                sys.modules["keras.src.legacy"] = module
+    except Exception:
+        pass
 
 
 # ==================================
@@ -76,18 +114,36 @@ MODEL_DIR = BASE_DIR / "models"
 
 
 def load_joblib_file(path: Path, name: str):
+    ensure_numpy_compatibility()
+    ensure_keras_compatibility()
+
     try:
         return joblib.load(path)
     except FileNotFoundError:
         st.error(f"❌ {name} not found at {path}")
     except Exception as exc:
-        st.error(f"❌ Failed to load {name}: {exc}")
+        st.warning(f"⚠️ Failed to load {name}: {exc}")
+        if "sklearn_version" in str(exc) or "dtype" in str(exc) or "numpy._core" in str(exc):
+            st.info(
+                "This file may have been saved with a different NumPy/scikit-learn version or requires compatibility aliases."
+            )
     return None
 
 
 def load_keras_file(path: Path, name: str):
+    if model_loader is None:
+        st.warning(
+            "⚠️ Keras/TensorFlow is not available, so deep learning models will not be loaded."
+        )
+        return None
+
     try:
-        return load_model(path)
+        return model_loader(path, compile=False)
+    except TypeError:
+        try:
+            return model_loader(path)
+        except Exception as exc:
+            st.warning(f"⚠️ Failed to load {name}: {exc}")
     except FileNotFoundError:
         st.warning(f"⚠️ {name} not found at {path}")
     except Exception as exc:
@@ -102,16 +158,24 @@ def load_models():
 
     cnn_model = None
     lstm_model = None
-    if tf_available and load_model is not None:
+    if model_loader is not None:
         cnn_model = load_keras_file(MODEL_DIR / "cnn_model.h5", "cnn_model.h5")
         lstm_model = load_keras_file(MODEL_DIR / "lstm_model.h5", "lstm_model.h5")
     else:
-        if not tf_available:
-            st.warning("⚠️ TensorFlow is not available, CNN and LSTM models will not be loaded.")
+        if not tf_available and not keras_available:
+            st.warning(
+                "⚠️ TensorFlow/Keras is not available, so CNN and LSTM models will not be loaded."
+            )
 
     tfidf = load_joblib_file(BASE_DIR / "tfidf.pkl", "tfidf.pkl")
     label_encoder = load_joblib_file(BASE_DIR / "label_encoder.pkl", "label_encoder.pkl")
-    tokenizer = load_joblib_file(BASE_DIR / "tokenizer.pkl", "tokenizer.pkl")
+    tokenizer = None
+    if keras_available:
+        tokenizer = load_joblib_file(BASE_DIR / "tokenizer.pkl", "tokenizer.pkl")
+    else:
+        st.warning(
+            "⚠️ tokenizer.pkl loading skipped because standalone Keras is not installed."
+        )
     job_tfidf = load_joblib_file(BASE_DIR / "job_tfidf.pkl", "job_tfidf.pkl")
 
     try:
@@ -166,6 +230,10 @@ def clean_text(text):
 # ==================================
 
 def predict_category(text):
+    if rf_model is None or tfidf is None or label_encoder is None:
+        raise RuntimeError(
+            "RF classification is unavailable because model artifacts failed to load."
+        )
     cleaned = clean_text(text)
     vector = tfidf.transform([cleaned])
     prediction = rf_model.predict(vector)[0]
@@ -173,6 +241,10 @@ def predict_category(text):
 
 
 def predict_category_gb(text):
+    if gb_model is None or tfidf is None or label_encoder is None:
+        raise RuntimeError(
+            "GB classification is unavailable because model artifacts failed to load."
+        )
     cleaned = clean_text(text)
     vector = tfidf.transform([cleaned])
     prediction = gb_model.predict(vector)[0]
@@ -302,23 +374,55 @@ if st.button("Analyze Resume"):
     if not resume_text.strip():
         st.warning("Please upload or paste resume.")
     else:
-        category = predict_category(resume_text)
-        gb_category = predict_category_gb(resume_text)
-        recommendations = recommend_jobs(resume_text)
+        classification_ready = (
+            rf_model is not None
+            and gb_model is not None
+            and tfidf is not None
+            and label_encoder is not None
+        )
+        recommendation_ready = job_tfidf is not None and not jobs_df.empty
 
-        best_index = recommendations.index[0]
-        best_job = jobs_df.loc[best_index, "combined_text"]
+        category = "Unavailable"
+        gb_category = "Unavailable"
+        recommendations = pd.DataFrame()
+        best_job = None
+        score = None
+        missing_skills = []
+        guidance = "Unavailable"
 
-        score = ats_score(resume_text, best_job)
-        missing_skills = skill_gap_analysis(resume_text, best_job)
-        guidance = career_guidance(score)
+        if classification_ready:
+            try:
+                category = predict_category(resume_text)
+            except Exception as exc:
+                st.warning(f"⚠️ RF prediction unavailable: {exc}")
+            try:
+                gb_category = predict_category_gb(resume_text)
+            except Exception as exc:
+                st.warning(f"⚠️ GB prediction unavailable: {exc}")
+        else:
+            st.warning(
+                "⚠️ Classification is unavailable because some model artifacts failed to load."
+            )
 
-        st.success("Analysis Completed Successfully")
+        if recommendation_ready:
+            recommendations = recommend_jobs(resume_text)
+            if not recommendations.empty:
+                best_index = recommendations.index[0]
+                best_job = jobs_df.loc[best_index, "combined_text"]
+                score = ats_score(resume_text, best_job)
+                missing_skills = skill_gap_analysis(resume_text, best_job)
+                guidance = career_guidance(score)
+        else:
+            st.warning(
+                "⚠️ Job recommendation and ATS scoring are unavailable because job corpus data failed to load."
+            )
+
+        st.success("Analysis completed.")
 
         col1, col2, col3, col4 = st.columns(4)
 
         with col1:
-            st.metric("ATS Score", f"{score}%")
+            st.metric("ATS Score", f"{score}%" if score is not None else "Unavailable")
 
         with col2:
             st.metric("RF Prediction", category)
@@ -345,7 +449,13 @@ if st.button("Analyze Resume"):
         tab1, tab2 = st.tabs(["Skill Gap Analysis", "Job Recommendations"])
 
         with tab1:
-            st.write(missing_skills)
+            if best_job is not None:
+                st.write(missing_skills)
+            else:
+                st.write("Skill gap analysis unavailable until job corpus data is loaded.")
 
         with tab2:
-            st.dataframe(recommendations, use_container_width=True)
+            if not recommendations.empty:
+                st.dataframe(recommendations, use_container_width=True)
+            else:
+                st.write("Job recommendations are unavailable.")
